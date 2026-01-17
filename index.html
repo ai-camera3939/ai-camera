@@ -113,5 +113,31 @@
 
     loadCameras();
   </script>
+<script>
+let webcamStream = null;
+
+async function startCamera() {
+  const video = document.getElementById("webcam");
+
+  // 既に動いているカメラを停止
+  if (webcamStream) {
+    webcamStream.getTracks().forEach(track => track.stop());
+  }
+
+  // 外カメラ（背面）を指定
+  const constraints = {
+    video: {
+      facingMode: { exact: "environment" }
+    },
+    audio: false
+  };
+
+  webcamStream = await navigator.mediaDevices.getUserMedia(constraints);
+  video.srcObject = webcamStream;
+}
+
+// ボタンを押したら開始
+document.getElementById("restartBtn").addEventListener("click", startCamera); </script>
+
 </body>
 </html>
