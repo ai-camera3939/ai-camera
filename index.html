@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI過積載判定</title>
+
+  <style>
+    body { font-family: sans-serif; text-align: center; background: #f5f5f5; }
+    video { border: 3px solid #333; border-radius: 8px; }
+    .ok { color: green; font-size: 24px; font-weight: bold; }
+    .ng { color: red; font-size: 32px; font-weight: bold; }
+    .row { margin: 10px 0; }
+    select, button { font-size: 16px; padding: 8px; }
+  </style>
+</head>
+
+<body>
+  <h2>AI過積載判定</h2>
+
+  <div class="row">
+    <label>カメラ：</label>
+    <select id="cameraSelect"></select>
+    <button id="restartBtn">このカメラで開始</button>
+  </div>
+
+  <video id="webcam" autoplay playsinline width="360"></video>
+  <p id="result">準備中…</p>
+
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest"></script>
+
+  <script>
+    // ===== Teachable Machine モデルURL =====
+    const URL = "https://teachablemachine.withgoogle.com/models/KCkoAKQR4/";
+
+    // ===== 判定設定（甘め：NGになりにくい）=====
+    const THRESHOLD = 0.80;     // 確信度しきい値（上げるほどNGが出にくい）
+    const VOTE_COUNT = 10;      // 判定に使うフレーム数
+    const VOTE_NG_NEED = 7;     // NGとみなす最小回数（上げるほどNGが出にくい）
+
+    // ===== カメラ設定 =====
+    const FLIP = false; // 外カメラ(背面/USB)なら false。自撮りなら true に。
+
+    let model, webcam;
+    let history = [];
+    let currentDeviceId = null;
+
+    const resultEl = document.getElementById("result");
+    const videoEl = document.getElementById("webcam");
+    const cameraSelect = document.getElementById("cameraSelect");
+    const restartBtn = document.getElementById("restartBtn");
+
+    async function loadModel() {
+      model = await tmImage.load(URL + "model.json", URL + "metadata.json");
+    }
+
+    async function ensurePermissionOnce() {
+      // enumerateDevicesでラベルを出すには一度許可が必要なことが多い
+      const s = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      s.getTracks().forEach(t => t.stop());
+    }
+
+    async function populateCameraList() {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const cams = devices.filter(d => d.kind === "videoinput");
+
+      cameraSelect.innerHTML = "";
+      cams.forEach((cam, idx) => {
+        const opt = document.createElement("option");
+        opt.value = cam.deviceId;
+        opt.textContent = cam.label || `Camera ${idx + 1}`;
+        cameraSelect.appendChild(opt);
+      });
+
+      // 背面っぽい名前（Back/Rear/環境）を優先
+      const preferIdx = cams.findIndex(c =>
+        /back|rear|environment|背面/i.test(c.label || "")
+      );
+      if (preferIdx >= 0) cameraSelect.selectedIndex = preferIdx;
+
+      currentDeviceId = cameraSelect.value || null;
+    }
+
+    async function stopWebcam() {
+      if (webcam && webcam.webcam && webcam.webcam.srcObject) {
+        const stream = webcam.webcam.srcObject;
+        stream.getTracks().forEach(t => t.stop());
+      }
+      webcam = null;
+      history = [];
+    }
+
+    async function startWebcam(deviceId) {
+      await stopWebcam();
+
+      webcam = new tmImage.Webcam(360, 360, FLIP);
+
+      // deviceId が取れたらそれを使う。無ければ背面優先でリクエスト
+      const constraints = deviceId
+        ? { deviceId: { exact: deviceId } }
+        : { facingMode: "environment" };
+
+      await webcam.setup(constraints); // ← 外カメラ選択ここ
+      await webcam.play();
+
+      videoEl.srcObject = webcam.webcam;
+
+      window.requestAnimationFrame(loop);
+    }
+
+    async function loop() {
+      if (!webcam) return;
+
+      webcam.update();
+
+      const predictions = await model.predict(webcam.canvas);
+      predictions.sort((a, b) => b.probability - a.probability);
+      const top = predictions[0];
+
+      history.push(top);
+      if (history.length > VOTE_COUNT) history.shift();
+
+      const ngCount = history.filter(p =>
+        p.className === "NG" && p.probability >= THRESHOLD
+      ).length;
+
+      if (ngCount >= VOTE_NG_NEED) {
+        resultEl.textContent = "⚠ 過積載 NG";
+        resultEl.className = "ng";
+      } else {
+        resultEl.textContent = `OK（${top.className} ${top.probability.toFixed(2)}）`;
+        resultEl.className = "ok";
+      }
+
+      window.requestAnimationFrame(loop);
+    }
+
+    restartBtn.addEventListener("click", async () => {
+      currentDeviceId = cameraSelect.value;
+      await startWebcam(currentDeviceId);
+    });
+
+    async function main() {
+      resultEl.textContent = "モデル読み込み中…";
+      await loadModel();
+
+      resultEl.textContent = "カメラ権限確認中…";
+      await ensurePermissionOnce();
+
+      resultEl.textContent = "カメラ一覧取得中…";
+      await populateCameraList();
+
+      resultEl.textContent = "カメラ起動中…";
+      await startWebcam(currentDeviceId);
+    }
+
+    main().catch(e => {
+      resultEl.textContent = "エラー: " + e;
+      console.error(e);
+    });
+  </script>
+</body>
+</html>
